@@ -3,7 +3,7 @@
 ## Author: |c00BFFFBjørn|r
 ## Title: Crit Meter
 ## SavedVariables: CritMeterSV
-## Version: 1.1.0
+## Version: 1.2.0
 
 # This Add-on is not created by, affiliated with or sponsored by ZeniMax Media Inc. or its affiliates.
 # The Elder Scrolls® and related logos are registered trademarks or trademarks of

@@ -1,9 +1,11 @@
 local namespace = 'CritMeter'
 local isUIUnlocked = false
-local cpSkillCritMod = 0
-local sv -- Saved variables
 local isPlayerInCombat = false
-local critDamage = GetAdvancedStatValue(ADVANCED_STAT_DISPLAY_TYPE_CRITICAL_DAMAGE)
+local sv, _
+local critDamage = 0
+local cpCritMod = 0
+local debuffCritMod = 0
+local isWarden = GetUnitClassId('player') == 4 and true or false
 
 local defaults = {
     x = 300,
@@ -11,52 +13,74 @@ local defaults = {
 }
 
 local targetDebuffs = {
-    [142610] = 5, -- Flame Weakness, Elemental Catalyst
-    [142652] = 5, -- Frost Weakness, Elemental Catalyst
-    [142653] = 5, -- Shock Weakness, Elemental Catalyst
+    [142610] = 5, -- Flame Weakness
+    [142652] = 5, -- Frost Weakness
+    [142653] = 5, -- Shock Weakness
     [145975] = 10, -- Minor Brittle
 }
 
+local chilledUnits = {}
+
 local EM = EVENT_MANAGER
 
--- Check crit dmg debuffs on reticle target
-local function GetTargetDebuffs(eventCode)
-    if DoesUnitExist('reticleover') and not IsUnitPlayer('reticleover') then
-        for i = 1, GetNumBuffs('reticleover') do
-            local _, _, _, _, _, _, _, _, _, _, abilityId = GetUnitBuffInfo('reticleover', i)
+local function UpdateUI()
+    local totalCritDamage = 50 + critDamage + cpCritMod + debuffCritMod
+    local isCap = totalCritDamage / 125 >= 1
+    local colour = isCap and {0.49, 0.72, 0.34} or {0.92, 0.27, 0.38}
 
-            if targetDebuffs[abilityId] then critDamage = critDamage + targetDebuffs[abilityId] end
+    CritMeter_UI_Text:SetText(totalCritDamage)
+    CritMeter_UI_Bar:SetWidth(isCap and 194 or 194 * totalCritDamage / 125)
+    CritMeter_UI_Bar:SetColor(unpack(colour))
+end
+
+local function OnCritDamageUpdated(eventCode, ...)
+    _, _, critDamage = GetAdvancedStatValue(ADVANCED_STAT_DISPLAY_TYPE_CRITICAL_DAMAGE)
+
+    UpdateUI()
+end
+
+local function OnChilledUpdated(eventCode, result, isError, abilityName, abilityGraphic, abilityActionSlotType, sourceName, sourceType, targetName, targetType, hitValue, powerType, damageType, log, sourceUnitId, targetUnitId, abilityId, overflow)
+    if result == ACTION_RESULT_EFFECT_GAINED then
+        targetName = LocalizeString('<<1>>', targetName)
+        chilledUnits[targetName] = targetUnitId
+    elseif result == ACTION_RESULT_EFFECT_FADED then
+        for name, id in pairs(chilledUnits) do
+            if targetUnitId == id then chilledUnits[name] = nil end
         end
     end
 end
 
--- Whenever registered abilities fade, refresh or are gained this function is called, getting player's current crit dmg as well as crit dmg debuffs on reticle target
-local function OnCritDamageUpdated(eventCode, changeType, effectSlot, effectName, unitTag, beginTime, endTime, stackCount, iconName, buffType, effectType, abilityType, statusEffectType, unitName, unitId, abilityId, sourceType)
-    _, _, critDamage = GetAdvancedStatValue(ADVANCED_STAT_DISPLAY_TYPE_CRITICAL_DAMAGE)
-    critDamage = critDamage + 50 + cpSkillCritMod
+local function GetTargetDebuffs(...)
+    if DoesUnitExist('reticleover') and not IsUnitPlayer('reticleover') then
+        debuffCritMod = 0
+        local isChilled = false
+        local targetName = GetUnitNameHighlightedByReticle()
+        for i = 1, GetNumBuffs('reticleover') do
+            local _, _, _, _, _, _, _, _, _, _, abilityId = GetUnitBuffInfo('reticleover', i)
 
-    GetTargetDebuffs()
+            if targetDebuffs[abilityId] then debuffCritMod = debuffCritMod + targetDebuffs[abilityId] end
+            -- Minor Maim = 61723
+            if abilityId == 61723 or abilityId == 145975 then isChilled = true end
+        end
 
-    if critDamage > 125 then critDamage = 125 end
+        -- There could be multiple enemies with the same name so checking for Minor Maim and Minor Brittle as well should ensure a good user experience
+        if isWarden and isChilled and chilledUnits[targetName] then debuffCritMod = debuffCritMod + 10 end
 
-    local colour = critDamage / 125 == 1 and {0.49, 0.72, 0.34} or {0.92, 0.27, 0.38}
-
-    CritMeter_UI_Text:SetText(critDamage)
-    CritMeter_UI_Bar:SetWidth(194 * critDamage / 125)
-    CritMeter_UI_Bar:SetColor(unpack(colour))
+        UpdateUI()
+    end
 end
 
 local function OnCPChanged(eventCode, result)
     if result == CHAMPION_PURCHASE_SUCCESS then
-        cpSkillCritMod = 0
+        cpCritMod = 0
         for disciplineIndex = 4, 8 do
             local championSkillId = GetSlotBoundId(disciplineIndex, HOTBAR_CATEGORY_CHAMPION)
 
             -- Backstabber CP
-            if championSkillId == 31 then cpSkillCritMod = cpSkillCritMod + 15 end
+            if championSkillId == 31 then cpCritMod = cpCritMod + 15 end
         end
 
-        OnCritDamageUpdated()
+        UpdateUI()
     end
 end
 
@@ -90,10 +114,10 @@ function CritMeterOnMoveStop()
     sv.x, sv.y = CritMeter_UI:GetCenter()
 end
 
--- Get saved variables, reposition ui, and register events
+-- Get saved variables, reposition ui and register events
 local function OnAddonLoaded(eventCode, addonName)
     if addonName == namespace then
-        EM:UnregisterForEvent(namespace, eventCode)
+        EM:UnregisterForEvent(addonName, eventCode)
 
         sv = ZO_SavedVars:NewAccountWide('CritMeterSV', 1, nil, defaults)
 
@@ -105,17 +129,20 @@ local function OnAddonLoaded(eventCode, addonName)
         HUD_UI_SCENE:AddFragment(fragment)
 
         -- In order: Minor Force, Major Force, Minor Enervation, Senche's Bite, Sul-Xan Soulbound, Harpooner's Wading Kilt
-        for index, abilityId in ipairs({61746, 61747, 79907, 127192, 154737, 155150}) do
+        for index, abilityId in ipairs({61746, 61747, 79909, 127192, 154737, 155150}) do
             local namespace = namespace .. abilityId
             EM:RegisterForEvent(namespace, EVENT_EFFECT_CHANGED, OnCritDamageUpdated)
             EM:AddFilterForEvent(namespace, EVENT_EFFECT_CHANGED, REGISTER_FILTER_ABILITY_ID, abilityId, REGISTER_FILTER_UNIT_TAG, 'player')
         end
 
         -- Hidden (Archer's Mind)
-        EM:RegisterForEvent(namespace .. 'Crouch', EVENT_COMBAT_EVENT, OnCritDamageUpdated)
-        EM:AddFilterForEvent(namespace .. 'Crouch', EVENT_COMBAT_EVENT, REGISTER_FILTER_ABILITY_ID, 20309, REGISTER_FILTER_TARGET_COMBAT_UNIT_TYPE, COMBAT_UNIT_TYPE_PLAYER)
+        EM:RegisterForEvent(namespace .. 'Hidden', EVENT_COMBAT_EVENT, OnCritDamageUpdated)
+        EM:AddFilterForEvent(namespace .. 'Hidden', EVENT_COMBAT_EVENT, REGISTER_FILTER_ABILITY_ID, 20309, REGISTER_FILTER_TARGET_COMBAT_UNIT_TYPE, COMBAT_UNIT_TYPE_PLAYER)
 
-        -- Minor Brittle and Elemental Catalyst
+        -- Minor Brittle
+        EM:RegisterForEvent(namespace .. 'Chilled', EVENT_COMBAT_EVENT, OnChilledUpdated)
+        EM:AddFilterForEvent(namespace .. 'Chilled', EVENT_COMBAT_EVENT, REGISTER_FILTER_ABILITY_ID, 95136)
+
         EM:RegisterForEvent(namespace .. 'Reticle', EVENT_RETICLE_TARGET_CHANGED, GetTargetDebuffs)
 
         -- True-Sworn Fury
