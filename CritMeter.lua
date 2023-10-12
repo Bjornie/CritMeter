@@ -1,11 +1,10 @@
 local namespace = 'CritMeter'
 local isUIUnlocked = false
 local isPlayerInCombat = false
-local sv, _
+local sv
 local critDamage = 0
 local cpCritMod = 0
 local debuffCritMod = 0
-local isWarden = GetUnitClassId('player') == 4 and true or false
 
 local defaults = {
     x = 300,
@@ -17,9 +16,18 @@ local targetDebuffs = {
     [142652] = 5, -- Frost Weakness
     [142653] = 5, -- Shock Weakness
     [145975] = 10, -- Minor Brittle
+    [145977] = 20, -- Major Brittle
 }
 
-local chilledUnits = {}
+local playerBuffs = {
+    61746, -- Minor Force
+    61747, -- Major Force
+    79909, -- Minor Enervation
+    127192, -- Senche's Bite
+    154737, -- Sul-Xan Soulbound
+    155150, -- Harpooner's Wading Kilt
+    194875, -- Fated Fortune
+}
 
 local EM = EVENT_MANAGER
 
@@ -39,32 +47,14 @@ local function OnCritDamageUpdated(eventCode, ...)
     UpdateUI()
 end
 
-local function OnChilledUpdated(eventCode, result, isError, abilityName, abilityGraphic, abilityActionSlotType, sourceName, sourceType, targetName, targetType, hitValue, powerType, damageType, log, sourceUnitId, targetUnitId, abilityId, overflow)
-    if result == ACTION_RESULT_EFFECT_GAINED then
-        targetName = LocalizeString('<<1>>', targetName)
-        chilledUnits[targetName] = targetUnitId
-    elseif result == ACTION_RESULT_EFFECT_FADED then
-        for name, id in pairs(chilledUnits) do
-            if targetUnitId == id then chilledUnits[name] = nil end
-        end
-    end
-end
-
 local function GetTargetDebuffs(...)
     if DoesUnitExist('reticleover') and not IsUnitPlayer('reticleover') then
         debuffCritMod = 0
-        local isChilled = false
-        local targetName = GetUnitNameHighlightedByReticle()
         for i = 1, GetNumBuffs('reticleover') do
             local _, _, _, _, _, _, _, _, _, _, abilityId = GetUnitBuffInfo('reticleover', i)
 
             if targetDebuffs[abilityId] then debuffCritMod = debuffCritMod + targetDebuffs[abilityId] end
-            -- Minor Maim = 61723
-            if abilityId == 61723 or abilityId == 145975 then isChilled = true end
         end
-
-        -- There could be multiple enemies with the same name so checking for Minor Maim and Minor Brittle as well should ensure a good user experience
-        if isWarden and isChilled and chilledUnits[targetName] then debuffCritMod = debuffCritMod + 10 end
 
         UpdateUI()
     end
@@ -109,12 +99,10 @@ local function OnPlayerActivated(eventCode, initial)
     OnCombatStateChanged(nil, inCombat)
 end
 
--- Save ui location after moving
 function CritMeterOnMoveStop()
     sv.x, sv.y = CritMeter_UI:GetCenter()
 end
 
--- Get saved variables, reposition ui and register events
 local function OnAddonLoaded(eventCode, addonName)
     if addonName == namespace then
         EM:UnregisterForEvent(addonName, eventCode)
@@ -128,20 +116,15 @@ local function OnAddonLoaded(eventCode, addonName)
         HUD_SCENE:AddFragment(fragment)
         HUD_UI_SCENE:AddFragment(fragment)
 
-        -- In order: Minor Force, Major Force, Minor Enervation, Senche's Bite, Sul-Xan Soulbound, Harpooner's Wading Kilt
-        for index, abilityId in ipairs({61746, 61747, 79909, 127192, 154737, 155150}) do
-            local namespace = namespace .. abilityId
-            EM:RegisterForEvent(namespace, EVENT_EFFECT_CHANGED, OnCritDamageUpdated)
-            EM:AddFilterForEvent(namespace, EVENT_EFFECT_CHANGED, REGISTER_FILTER_ABILITY_ID, abilityId, REGISTER_FILTER_UNIT_TAG, 'player')
+        for index, abilityId in ipairs(playerBuffs) do
+            local id = namespace .. abilityId
+            EM:RegisterForEvent(id, EVENT_EFFECT_CHANGED, OnCritDamageUpdated)
+            EM:AddFilterForEvent(id, EVENT_EFFECT_CHANGED, REGISTER_FILTER_ABILITY_ID, abilityId, REGISTER_FILTER_UNIT_TAG, 'player')
         end
 
         -- Hidden (Archer's Mind)
         EM:RegisterForEvent(namespace .. 'Hidden', EVENT_COMBAT_EVENT, OnCritDamageUpdated)
         EM:AddFilterForEvent(namespace .. 'Hidden', EVENT_COMBAT_EVENT, REGISTER_FILTER_ABILITY_ID, 20309, REGISTER_FILTER_TARGET_COMBAT_UNIT_TYPE, COMBAT_UNIT_TYPE_PLAYER)
-
-        -- Minor Brittle
-        EM:RegisterForEvent(namespace .. 'Chilled', EVENT_COMBAT_EVENT, OnChilledUpdated)
-        EM:AddFilterForEvent(namespace .. 'Chilled', EVENT_COMBAT_EVENT, REGISTER_FILTER_ABILITY_ID, 95136)
 
         EM:RegisterForEvent(namespace .. 'Reticle', EVENT_RETICLE_TARGET_CHANGED, GetTargetDebuffs)
 
@@ -152,7 +135,7 @@ local function OnAddonLoaded(eventCode, addonName)
         EM:RegisterForEvent(namespace .. 'Gear', EVENT_INVENTORY_SINGLE_SLOT_UPDATE, OnCritDamageUpdated)
         EM:AddFilterForEvent(namespace .. 'Gear', EVENT_INVENTORY_SINGLE_SLOT_UPDATE, REGISTER_FILTER_BAG_ID, BAG_WORN, REGISTER_FILTER_INVENTORY_UPDATE_REASON, INVENTORY_UPDATE_REASON_DEFAULT)
 
-        -- Nightblade's Hemorrhage and Templar's Piercing Spear passives require skill slotted
+        -- Nightblade's Hemorrhage, Templar's Piercing Spear and Warden's Advanced Species passives require skill slotted
         EM:RegisterForEvent(namespace .. 'Skill', EVENT_ACTION_SLOT_UPDATED, OnCritDamageUpdated)
         EM:RegisterForEvent(namespace .. 'AllSkills', EVENT_ACTION_SLOTS_ALL_HOTBARS_UPDATED, OnCritDamageUpdated)
         EM:RegisterForEvent(namespace .. 'Hotbar', EVENT_ACTION_SLOTS_ACTIVE_HOTBAR_UPDATED, OnCritDamageUpdated)
@@ -167,7 +150,6 @@ end
 
 EM:RegisterForEvent(namespace, EVENT_ADD_ON_LOADED, OnAddonLoaded)
 
--- Chat command to (un-)lock ui
 SLASH_COMMANDS['/critmeter'] = function()
     isUIUnlocked = not isUIUnlocked
 
